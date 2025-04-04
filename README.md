@@ -3,10 +3,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub last commit](https://img.shields.io/github/last-commit/fabriziosalmi/k8s.svg)](https://github.com/fabriziosalmi/k8s/commits/main)
 
-Welcome! This repository (`fabriziosalmi/k8s`) hosts a suite of Bash scripts meticulously crafted to simplify the setup, management, and monitoring of a single-node Kubernetes cluster. Ideal for homelab enthusiasts, testing environments, or anyone looking to quickly bootstrap a K8s instance. 
+Welcome! This repository (`fabriziosalmi/k8s`) hosts a suite of Bash scripts meticulously crafted to simplify the setup, management, and monitoring of a single-node Kubernetes cluster. Ideal for homelab enthusiasts, testing environments, or anyone looking to quickly bootstrap a K8s instance.
 
 > [!WARNING]
-> You will be up & running in less than 2 minutes 🚀
+> You can get a basic cluster running or managed in minutes! 🚀
 
 ---
 
@@ -14,9 +14,10 @@ Welcome! This repository (`fabriziosalmi/k8s`) hosts a suite of Bash scripts met
 
 These scripts aim to automate common, often repetitive, tasks involved in running a Kubernetes cluster and self-hosted applications:
 
-*   🚀 **[`install.sh`](install.sh):** Your starting point! Automates the setup of a Kubernetes `v1.29.0` cluster (configurable) on a single Debian/Ubuntu node using `kubeadm`. Handles prerequisites, container runtime (`containerd`), core components, networking (Calico), and optional extras like the Kubernetes Dashboard and a Caddy example.
-*   ⚙️ **[`manage.sh`](manage.sh):** An interactive application manager. Deploy or uninstall a curated list of popular self-hosted applications (Portainer, Nextcloud, Gitea, etc.) with basic `hostPath` persistence. Perfect for quick demos or simple single-node setups.
-*   📊 **[`monitor.sh`](monitor.sh):** A command-line dashboard providing a real-time health check and status overview of your cluster. See node status, resource usage (requires Metrics Server), control plane health, core addons, application summaries, and recent events at a glance.
+*   🚀 **[`install.sh`](install.sh):** Your starting point for a *full setup*! Automates the creation of a Kubernetes `v1.29.0` cluster (configurable) on a single Debian/Ubuntu node using `kubeadm`. Handles prerequisites, container runtime (`containerd`), core components, networking (Calico), and optional extras like the Kubernetes Dashboard and a Caddy example.
+*   🔄 **[`switch.sh`](switch.sh):** A simple utility to *control* an existing `kubeadm`-based cluster. Use it to quickly `start` (initialize if needed, or start services), `stop` (stop Kubelet/containerd), `destroy` (run `kubeadm reset` safely), or check the `status` of your single-node cluster. Assumes core components are already installed.
+*   ⚙️ **[`manage.sh`](manage.sh):** An interactive *application manager*. Deploy or uninstall a curated list of popular self-hosted applications (Portainer, Nextcloud, Gitea, etc.) with basic `hostPath` persistence. Perfect for quick demos or simple single-node setups.
+*   📊 **[`monitor.sh`](monitor.sh):** A command-line *dashboard* providing a real-time health check and status overview of your cluster. See node status, resource usage (requires Metrics Server), control plane health, core addons, application summaries, and recent events at a glance.
 
 ---
 
@@ -24,27 +25,29 @@ These scripts aim to automate common, often repetitive, tasks involved in runnin
 
 Before diving in, ensure your environment meets these requirements:
 
-1.  **🐧 Operating System:** Debian or Ubuntu-based Linux distribution (tested on Ubuntu). Scripts use `apt-get`.
-2.  **💻 Architecture:** Primarily designed for `amd64`. Manifests (like Calico) might need adjustment for other architectures (e.g., ARM).
+1.  **🐧 Operating System:** Debian or Ubuntu-based Linux distribution (tested on Ubuntu). Scripts use `apt-get`, `systemctl`, etc.
+2.  **💻 Architecture:** Primarily designed for `amd64`. Manifests (like Calico in `install.sh`) might need adjustment for other architectures (e.g., ARM).
 3.  **🔑 Root Access:**
-    *   `install.sh` **must** be run via `sudo`.
+    *   `install.sh` and `switch.sh` **must** be run via `sudo` as they modify system services, packages, and configurations.
     *   `manage.sh` needs permissions to create directories under `/srv/k8s-apps-data` (default). Run as root (`sudo`) or adjust permissions on this path beforehand.
-4.  **🌐 Internet Connection:** Required by `install.sh` for downloading packages and manifests.
+4.  **🌐 Internet Connection:** Required by `install.sh` for downloading packages and manifests. `switch.sh` might need it indirectly if `kubeadm init` runs.
 5.  **💪 System Resources:** Adequate CPU (2+ cores recommended), RAM (4GB+ recommended), and disk space for Kubernetes and your desired applications.
-6.  **🐚 Bash:** Version 4 or later (uses `mapfile`/`readarray`). Check with `bash --version`.
+6.  **🐚 Bash:** Version 4 or later (uses `mapfile`/`readarray` in some scripts). Check with `bash --version`.
 7.  **🛠️ Required Tools:**
-    *   Standard GNU/Linux utilities: `curl`, `gpg`, `awk`, `sed`, `grep`, `sort`, `head`, `tail`, `wc`, `cut`, `printf`, `date`, `id`, `tee`, `modprobe`, `sysctl`, `systemctl`, `dpkg-query`, `apt-get`, `apt-mark`, `hostname`.
+    *   Standard GNU/Linux utilities: `curl`, `gpg`, `awk`, `sed`, `grep`, `sort`, `head`, `tail`, `wc`, `cut`, `printf`, `date`, `id`, `tee`, `modprobe`, `sysctl`, `systemctl`, `dpkg-query`, `apt-get`, `apt-mark`, `hostname`, `swapoff`.
     *   `jq`: **Highly recommended** for reliable JSON parsing (`install.sh`, `monitor.sh`). Scripts have fallbacks but `jq` is preferred. Install via `sudo apt-get update && sudo apt-get install -y jq`.
-8.  **☸️ `kubectl`:** The Kubernetes command-line tool. `install.sh` handles its installation. For `manage.sh` and `monitor.sh`, ensure `kubectl` is installed and configured (`~/.kube/config` or `KUBECONFIG` env var) to connect to your cluster. Verify with `kubectl cluster-info`.
+8.  **☸️ Kubernetes Components:**
+    *   For `install.sh`: It handles the installation of `kubeadm`, `kubelet`, `kubectl`, and `containerd`.
+    *   For `switch.sh`, `manage.sh`, `monitor.sh`: Assume `kubectl` is installed and configured (`~/.kube/config` or `KUBECONFIG` env var) to connect to your cluster. `switch.sh` also requires `kubeadm`, `kubelet`, and `containerd` (or another runtime) to be present on the system for its `start`/`stop`/`destroy` actions. Verify with `kubectl cluster-info`.
 9.  **(Optional) Metrics Server:** Needed by `monitor.sh` to show Node Resource Usage. If not detected, `monitor.sh` will provide installation instructions.
 
 ---
 
 ## 🚀 Script Details
 
-### 1. `install.sh` - Cluster Installation
+### 1. `install.sh` - Full Cluster Installation
 
-This script bootstraps your single-node Kubernetes cluster.
+This script bootstraps your single-node Kubernetes cluster from scratch.
 
 **Key Features:**
 
@@ -83,7 +86,33 @@ sudo ./install.sh
 
 ⚠️ **Important:** Read the prompts carefully, especially if an existing installation is detected. The `reset` option is **DESTRUCTIVE** to existing cluster configurations on the node. Review the script code before execution.
 
-### 2. `manage.sh` - Application Management
+### 2. `switch.sh` - Cluster Control (Start/Stop/Destroy/Status)
+
+A streamlined utility for managing the lifecycle of your `kubeadm`-based single-node cluster. Assumes necessary components (`kubeadm`, `kubelet`, `containerd`, `kubectl`) are already installed (e.g., by `install.sh` or manually).
+
+**Key Features:**
+
+*   ▶️ **`start`:** Checks runtime & config. Initializes the cluster via `kubeadm init` if needed (runs pre-flight checks, untaints node). Starts `kubelet` if configured but stopped.
+*   ⏹️ **`stop`:** Stops the `kubelet` service. Optionally stops the `containerd` service as well. Does *not* remove configuration.
+*   💥 **`destroy`:** Runs `kubeadm reset --force` after confirmation. Attempts to clean up common Kubernetes/CNI directories and restore swap settings in `/etc/fstab`. **USE WITH EXTREME CAUTION.**
+*   ℹ️ **`status`:** Provides a quick overview of the runtime status, initialization state, Kubelet service status, and API server reachability (including node and CoreDNS checks if possible).
+*   🛡️ Includes safety prompts for destructive actions.
+*   📝 Logs `kubeadm init` and `kubeadm reset` output to files (`kubeadm-init.log`, `kubeadm-reset.log`).
+
+**Usage:**
+
+```bash
+# 1. Make the script executable
+chmod +x switch.sh
+
+# 2. Run as root with the desired action
+sudo ./switch.sh start
+sudo ./switch.sh stop
+sudo ./switch.sh status
+sudo ./switch.sh destroy # <-- Be careful!
+```
+
+### 3. `manage.sh` - Application Management
 
 Deploy and manage common self-hosted applications interactively.
 
@@ -128,7 +157,7 @@ sudo ./manage.sh
 
 Follow the on-screen menus. Be **extremely careful** during the uninstall process, especially when asked about deleting host data, as this action is **irreversible**.
 
-### 3. `monitor.sh` - Cluster Monitoring Dashboard
+### 4. `monitor.sh` - Cluster Monitoring Dashboard
 
 Get a quick, comprehensive status overview of your cluster directly in the terminal.
 
@@ -166,7 +195,7 @@ chmod +x monitor.sh
 These scripts are powerful tools provided **as-is** for educational and homelab purposes. They modify system configurations, manage packages, interact with Kubernetes, and potentially delete data.
 
 *   🛑 **REVIEW THE CODE:** Understand what each script does before running it.
-*   ⚠️ **USE WITH CAUTION:** Especially destructive options like `kubeadm reset` or data deletion during uninstalls.
+*   ⚠️ **USE WITH CAUTION:** Especially destructive options like `kubeadm reset` (`install.sh`, `switch.sh`) or data deletion during uninstalls (`manage.sh`).
 *   💾 **BACKUP:** Always back up critical data before performing major operations.
 *   🚫 **NOT PRODUCTION-READY:** The storage approach in `manage.sh` (`hostPath`) is unsuitable for production.
 *   ❓ **NO WARRANTY:** The author provides no guarantees and is not responsible for any damage or data loss resulting from the use of these scripts.
@@ -179,7 +208,7 @@ These scripts are powerful tools provided **as-is** for educational and homelab 
 *   Integrate `local-path-provisioner` as an optional, more robust storage solution in `install.sh` and `manage.sh`.
 *   Support for other CNIs (e.g., Flannel, Cilium) in `install.sh`.
 *   Parameterize more options via command-line arguments instead of editing scripts.
-*   Improve error handling and reporting.
+*   Improve error handling and reporting across all scripts.
 *   Add basic backup/restore helpers to `manage.sh`.
 
 ---
