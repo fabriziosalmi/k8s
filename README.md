@@ -6,7 +6,20 @@
 Welcome! This repository (`fabriziosalmi/k8s`) hosts a suite of Bash scripts meticulously crafted to simplify the setup, management, and monitoring of a single-node Kubernetes cluster. Ideal for homelab enthusiasts, testing environments, or anyone looking to quickly bootstrap a K8s instance.
 
 > [!WARNING]
-> You can get a basic cluster running or managed in minutes! 🚀
+> You will have K8s up & running in less than 2 minutes! 🚀
+
+## Quick Run
+
+Satisfy requirements: 
+- Ubuntu 24
+- `git`
+
+```bash
+git clone https://github.com/fabriziosalmi/k8s
+cd k8s
+chmod +x install.sh
+./install.sh
+```
 
 ---
 
