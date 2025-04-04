@@ -96,8 +96,8 @@ chmod +x install.sh
 # 2. Run as root
 sudo ./install.sh
 ```
-
-⚠️ **Important:** Read the prompts carefully, especially if an existing installation is detected. The `reset` option is **DESTRUCTIVE** to existing cluster configurations on the node. Review the script code before execution.
+> [!IMPORTANT]
+> Read the prompts carefully, especially if an existing installation is detected. The `reset` option is **DESTRUCTIVE** to existing cluster configurations on the node. Review the script code before execution.
 
 ### 2. `switch.sh` - Cluster Control (Start/Stop/Destroy/Status)
 
@@ -138,8 +138,7 @@ Deploy and manage common self-hosted applications interactively.
 *   🗑️ Uninstall mode detects managed apps and allows selective removal.
 *   ❓ Prompts for confirmation before deleting K8s resources and host data.
 
-**💾 WARNING - Storage Limitation:**
-
+> [!WARNING]
 > This script utilizes **`hostPath` PersistentVolumes** by default, storing data directly on the node's filesystem (typically under `/srv/k8s-apps-data/<namespace>/`).
 >
 > *   🚨 **INSECURE:** Permissions can be problematic, and data is not isolated.
