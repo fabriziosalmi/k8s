@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Enable strict error handling
+set -euo pipefail
+
 # --- Configuration ---
 # Add namespaces here that you want to exclude from the Application Overview
 EXCLUDE_NAMESPACES=("kube-system" "kube-public" "kube-node-lease" "local-path-storage" "kube-flannel" "calico-system" "tigera-operator") # Added common CNI/operator namespaces

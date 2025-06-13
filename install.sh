@@ -1,13 +1,27 @@
 #!/bin/bash
 
+# Enable strict error handling
+set -euo pipefail
+
 # --- Script Configuration ---
-K8S_VERSION="1.29.0"
-CALICO_VERSION="v3.27.2"
-DASHBOARD_VERSION="v2.7.0"
-INSTALL_DASHBOARD="true"
-INSTALL_CADDY="true"
-CADDY_NAMESPACE="example-caddy"
-DASHBOARD_SERVICE_TYPE="NodePort" # NodePort or ClusterIP
+# Source common configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/config.sh" ]; then
+    source "$SCRIPT_DIR/config.sh"
+else
+    # Fallback values if config.sh is not found
+    K8S_VERSION="1.29.0"
+    CALICO_VERSION="v3.27.2"
+    DASHBOARD_VERSION="v2.7.0"
+    INSTALL_DASHBOARD="true"
+    INSTALL_CADDY="true"
+    CADDY_NAMESPACE="example-caddy"
+    DASHBOARD_SERVICE_TYPE="NodePort"
+    DASHBOARD_TOKEN_DURATION="3600"
+    DASHBOARD_TOKEN_FILE="/root/dashboard-token.txt"
+    CALICO_WAIT_TIMEOUT="600"
+    DASHBOARD_WAIT_TIMEOUT="360"
+fi
 
 # --- Terminal Colors ---
 RESET='\033[0m'
@@ -245,7 +259,7 @@ if [ "$CLUSTER_ACTION" = "init" ] || [ "$CLUSTER_ACTION" = "reset_and_init" ]; t
     if [ -f "$KUBECONFIG" ]; then error_exit "Found ${KUBECONFIG} unexpectedly before kubeadm init. Aborting."; fi
     log_info "Running kubeadm init (this may take a few minutes)..."
     check_command kubeadm
-    kubeadm init --pod-network-cidr=10.244.0.0/16 --kubernetes-version="${K8S_VERSION}" > kubeadm-init.log 2>&1 &
+    kubeadm init --pod-network-cidr=${POD_NETWORK_CIDR} --kubernetes-version="${K8S_VERSION}" > kubeadm-init.log 2>&1 &
     KUBEADM_PID=$!
     spin='-\|/'; i=0
     while kill -0 $KUBEADM_PID 2>/dev/null; do i=$(( (i+1) %4 )); printf "\r${CYAN}Initializing... ${spin:$i:1}${RESET}"; sleep .1; done
@@ -297,9 +311,25 @@ log_step "Installing Calico network plugin (${BOLD}${CALICO_VERSION}${RESET})"
 CALICO_URL="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
 log_info "Applying Calico manifest from ${CYAN}${CALICO_URL}${RESET}"; kubectl apply -f "$CALICO_URL" > /dev/null
 log_step "Waiting for Calico pods to be ready..."
-kubectl wait --for=condition=ready pod -l k8s-app=calico-kube-controllers -n kube-system --timeout=360s || log_warn "Timed out waiting for calico-kube-controllers."
-kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout=360s || log_warn "Timed out waiting for calico-node."
-success_msg "Finished waiting for Calico pods."
+log_info "Calico is essential for cluster networking. Waiting up to ${CALICO_WAIT_TIMEOUT} seconds..."
+
+# Check calico-kube-controllers
+if ! kubectl wait --for=condition=ready pod -l k8s-app=calico-kube-controllers -n kube-system --timeout="${CALICO_WAIT_TIMEOUT}s"; then
+    log_warn "Calico kube-controllers failed to become ready. Checking pod status..."
+    kubectl get pods -n kube-system -l k8s-app=calico-kube-controllers
+    kubectl describe pods -n kube-system -l k8s-app=calico-kube-controllers
+    error_exit "Calico kube-controllers not ready. Cluster will not function properly without CNI."
+fi
+
+# Check calico-node
+if ! kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout="${CALICO_WAIT_TIMEOUT}s"; then
+    log_warn "Calico node pods failed to become ready. Checking pod status..."
+    kubectl get pods -n kube-system -l k8s-app=calico-node
+    kubectl describe pods -n kube-system -l k8s-app=calico-node
+    error_exit "Calico node pods not ready. Cluster will not function properly without CNI."
+fi
+
+success_msg "Calico networking is ready!"
 
 # --- 7. Untaint Control Plane Node ---
 log_step "Allowing scheduling on control-plane node (${BOLD}${NODE_NAME}${RESET})"
@@ -327,32 +357,65 @@ if [ "$INSTALL_DASHBOARD" = "true" ]; then
     else success_msg "Dashboard service patched to NodePort."; fi
   fi
 
-  log_step "Creating Dashboard Admin User (${BOLD}${DASHBOARD_SA}${RESET}) and RBAC"
+  log_step "Creating Dashboard Admin User (${BOLD}${DASHBOARD_SA}${RESET}) and RBAC with limited permissions"
   cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: ${DASHBOARD_SA}, namespace: ${DASHBOARD_NS} }
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: dashboard-viewer }
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "namespaces", "pods", "services", "configmaps", "secrets", "persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata: { name: ${DASHBOARD_SA} }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: dashboard-viewer }
 subjects: [ { kind: ServiceAccount, name: ${DASHBOARD_SA}, namespace: ${DASHBOARD_NS} } ]
 EOF
-  success_msg "Dashboard ServiceAccount and ClusterRoleBinding applied."
+  success_msg "Dashboard ServiceAccount and ClusterRoleBinding (view-only) applied."
 
   log_step "Waiting for Dashboard pods to be ready..."
-  kubectl wait --for=condition=ready pod -l k8s-app=kubernetes-dashboard -n "$DASHBOARD_NS" --timeout=360s || log_warn "Timed out waiting for Dashboard pods."
+  kubectl wait --for=condition=ready pod -l k8s-app=kubernetes-dashboard -n "$DASHBOARD_NS" --timeout=${DASHBOARD_WAIT_TIMEOUT}s || log_warn "Timed out waiting for Dashboard pods."
   success_msg "Finished waiting for Dashboard pods."
 
   # --- Dashboard Access Instructions ---
   echo; log_step "Dashboard Access Information"; echo -e "${BLUE}---${RESET}"
   DASHBOARD_TOKEN=""; DASHBOARD_NODE_PORT=""
   if kubectl get serviceaccount "$DASHBOARD_SA" -n "$DASHBOARD_NS" > /dev/null 2>&1; then
-      log_info "Generating temporary access token for ${DASHBOARD_SA}..."; DASHBOARD_TOKEN=$(kubectl -n "$DASHBOARD_NS" create token "$DASHBOARD_SA" --duration=3600s)
-      echo -e "${YELLOW}${BOLD}Dashboard Access Token (expires in 1 hour):${RESET}\n${YELLOW}${BOLD}${DASHBOARD_TOKEN}${RESET}"; echo -e "${BLUE}---${RESET}"
-      log_warn "This token provides full cluster-admin access. Store securely."
-  else log_warn "Cannot find '${DASHBOARD_SA}' SA in '${DASHBOARD_NS}' ns. Token not generated."; fi
+      log_info "Generating temporary access token for ${DASHBOARD_SA}..."
+      DASHBOARD_TOKEN=$(kubectl -n "$DASHBOARD_NS" create token "$DASHBOARD_SA" --duration="${DASHBOARD_TOKEN_DURATION}s")
+      
+      # Save token to secure file
+      echo "$DASHBOARD_TOKEN" > "$DASHBOARD_TOKEN_FILE"
+      chmod 600 "$DASHBOARD_TOKEN_FILE"
+      chown root:root "$DASHBOARD_TOKEN_FILE"
+      
+      log_info "Dashboard token saved to: ${BOLD}${DASHBOARD_TOKEN_FILE}${RESET}"
+      echo -e "${YELLOW}${BOLD}Dashboard Access Token (expires in $((DASHBOARD_TOKEN_DURATION/3600)) hour(s)):${RESET}"
+      echo -e "${YELLOW}${BOLD}${DASHBOARD_TOKEN}${RESET}"
+      echo -e "${BLUE}---${RESET}"
+      log_warn "This token provides read-only dashboard access. Store securely and do not share."
+      log_info "Token file permissions set to 600 (root only)."
+  else 
+      log_warn "Cannot find '${DASHBOARD_SA}' SA in '${DASHBOARD_NS}' ns. Token not generated."
+  fi
   echo -e "${BLUE}---${RESET}"
   if [ "$DASHBOARD_SERVICE_TYPE" = "NodePort" ] && [ -n "$NODE_IP" ]; then
       DASHBOARD_NODE_PORT=$(kubectl get service "$DASHBOARD_SVC" -n "$DASHBOARD_NS" -o=jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "")

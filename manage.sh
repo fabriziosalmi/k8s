@@ -1,7 +1,20 @@
 #!/bin/bash
 
+# Enable strict error handling
+set -euo pipefail
+
 # --- Configuration ---
-HOST_DATA_BASE_DIR="/srv/k8s-apps-data"
+# Source common configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/config.sh" ]; then
+    source "$SCRIPT_DIR/config.sh"
+else
+    # Fallback values if config.sh is not found
+    HOST_DATA_BASE_DIR="/srv/k8s-apps-data"
+    DEFAULT_PUID="1000"
+    DEFAULT_PGID="1000"
+    DEPLOYMENT_WAIT_TIMEOUT="300"
+fi
 NODE_IP=""
 
 # --- Terminal Colors ---
@@ -22,15 +35,23 @@ check_root() { if [ "$(id -u)" -ne 0 ]; then error_exit "This script must be run
 check_command() { if ! command -v "$1" &> /dev/null; then error_exit "Required command '${BOLD}$1${RESET}${RED}' not found. Please install it."; fi; }
 check_kubectl() { if ! kubectl cluster-info > /dev/null 2>&1; then error_exit "Cannot connect to Kubernetes cluster. Check kubectl config (${BOLD}KUBECONFIG=${KUBECONFIG:-'default'}${RESET}${RED})."; fi; log_info "Successfully connected to Kubernetes cluster."; }
 
-# Function to create host path and PV/PVC (INSECURE - for demo only)
+# Function to create host path and PV/PVC with secure permissions
 # Metadata format: "namespace;pvc_suffixes;pv_suffixes" (comma-separated suffixes)
 setup_hostpath_pv_pvc() {
     local app_name="$1"; local namespace="$2"; local pvc_name="$3"; local host_path_suffix="$4"; local pv_suffix="$5"; local size="${6:-1Gi}"
     local host_path="${HOST_DATA_BASE_DIR}/${namespace}/${host_path_suffix}"; local pv_name="${namespace}-${pv_suffix}-pv"
-    log_info "[${app_name}] Ensuring host directory: ${CYAN}${host_path}${RESET}"; mkdir -p "$host_path" || error_exit "Failed to create host directory: $host_path"
-    chmod -R 777 "$host_path" || log_warn "Failed to chmod 777 $host_path."
-    log_warn "[${app_name}] Set insecure permissions (777) on ${host_path}. DEMO ONLY."
-    log_info "[${app_name}] Applying PV (${pv_name}) and PVC (${pvc_name})";
+    
+    log_info "[${app_name}] Ensuring host directory: ${CYAN}${host_path}${RESET}"
+    mkdir -p "$host_path" || error_exit "Failed to create host directory: $host_path"
+    
+    # Set secure permissions instead of 777
+    # The directory owner should be able to read/write, and the group/others should have minimal access
+    # The actual permissions will be managed by Kubernetes securityContext
+    chown "${DEFAULT_PUID}:${DEFAULT_PGID}" "$host_path" 2>/dev/null || log_warn "Could not set ownership on $host_path. Directory permissions may need manual adjustment."
+    chmod 755 "$host_path" || log_warn "Failed to set permissions on $host_path."
+    
+    log_info "[${app_name}] Set secure permissions (755) with owner ${DEFAULT_PUID}:${DEFAULT_PGID} on ${host_path}"
+    log_info "[${app_name}] Applying PV (${pv_name}) and PVC (${pvc_name})"
     cat <<EOF | kubectl apply -n "$namespace" -f - >/dev/null
 apiVersion: v1
 kind: PersistentVolume
@@ -62,22 +83,75 @@ deploy_generic_app() {
     cat <<EOF | kubectl apply -n "$namespace" -f - >/dev/null
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: ${app_name}-deployment, labels: { app: ${app_name}, managed-by: selfhost-deploy-script } }
-spec: { replicas: 1, selector: { matchLabels: { app: ${app_name} } }, template: { metadata: { labels: { app: ${app_name} } }, spec: { volumes: [ { name: data-volume, persistentVolumeClaim: { claimName: ${pvc_name} } } ], containers: [ { name: ${app_name}, image: ${image}, ports: [ { containerPort: ${container_port}, name: http } ], volumeMounts: [ { name: data-volume, mountPath: /data } ], env: [ { name: PUID, value: "1000" }, { name: PGID, value: "1000" }, { name: TZ, value: "Etc/UTC" } ${extra_env_yaml:+, ${extra_env_yaml}} ] } ] } } } # Note: simplified env structure here, ensure extra_env_yaml starts with comma if needed or adjust structure
+metadata: 
+  name: ${app_name}-deployment
+  labels: 
+    app: ${app_name}
+    managed-by: selfhost-deploy-script
+spec: 
+  replicas: 1
+  selector: 
+    matchLabels: 
+      app: ${app_name}
+  template: 
+    metadata: 
+      labels: 
+        app: ${app_name}
+    spec: 
+      securityContext:
+        runAsUser: ${DEFAULT_PUID}
+        runAsGroup: ${DEFAULT_PGID}
+        fsGroup: ${DEFAULT_PGID}
+      volumes: 
+        - name: data-volume
+          persistentVolumeClaim: 
+            claimName: ${pvc_name}
+      containers: 
+        - name: ${app_name}
+          image: ${image}
+          ports: 
+            - containerPort: ${container_port}
+              name: http
+          volumeMounts: 
+            - name: data-volume
+              mountPath: /data
+          env: 
+            - name: PUID
+              value: "${DEFAULT_PUID}"
+            - name: PGID
+              value: "${DEFAULT_PGID}"
+            - name: TZ
+              value: "Etc/UTC"
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: ${app_name}-service, labels: { managed-by: selfhost-deploy-script } }
-spec: { selector: { app: ${app_name} }, ports: [ { protocol: TCP, port: ${container_port}, targetPort: ${container_port} } ], type: NodePort }
+metadata: 
+  name: ${app_name}-service
+  labels: 
+    managed-by: selfhost-deploy-script
+spec: 
+  selector: 
+    app: ${app_name}
+  ports: 
+    - protocol: TCP
+      port: ${container_port}
+      targetPort: ${container_port}
+  type: NodePort
 EOF
     log_info "[${app_name}] Waiting for deployment to be ready..."
-    if kubectl wait --for=condition=available --timeout=300s deployment/${app_name}-deployment -n "$namespace"; then
+    if kubectl wait --for=condition=available --timeout=${DEPLOYMENT_WAIT_TIMEOUT}s deployment/${app_name}-deployment -n "$namespace"; then
         success_msg "[${app_name}] Deployment successful!"
         local node_port=$(kubectl get svc ${app_name}-service -n "$namespace" -o=jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "N/A")
         if [[ "$node_port" != "N/A" ]] && [[ -n "$NODE_IP" ]]; then
             local access_url="http://${NODE_IP}:${node_port}"; echo -e "${GREEN}--> Access ${app_name} at: ${BOLD}${CYAN}${access_url}${RESET}${RESET}";
         else log_warn "[${app_name}] Could not get NodePort or Node IP. Check service manually."; fi
-    else log_warn "[${app_name}] Deployment did not become available."; fi
+    else 
+        log_warn "[${app_name}] Deployment did not become available within ${DEPLOYMENT_WAIT_TIMEOUT} seconds."
+        log_warn "Debug commands:"
+        log_warn "  kubectl get pods -n ${namespace}"
+        log_warn "  kubectl describe deployment ${app_name}-deployment -n ${namespace}"
+        log_warn "  kubectl logs -l app=${app_name} -n ${namespace}"
+    fi
 }
 
 # --- Specific App Deployment Functions (Install) ---
